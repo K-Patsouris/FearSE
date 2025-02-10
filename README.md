@@ -24,5 +24,5 @@ git submodule update --init --recursive
 cmake --preset vs2022
 ```
 
-You can edit `CMakePresets.json` to add new presets, if you don't have/want Visual Studio 2022.
+Visual Studio solution files will be written in /build. You can edit `CMakePresets.json` to add new presets, if you don't have/want Visual Studio 2022.
 It should work just fine with 2019 and v142 toolset, but I haven't tested anything older.

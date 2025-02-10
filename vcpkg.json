@@ -1,0 +1,8 @@
+{
+  "name": "fearse",
+  "version": "1",
+  "dependencies": [
+    "rsm-binary-io",
+    "spdlog"
+  ]
+}

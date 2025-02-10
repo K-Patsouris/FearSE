@@ -14,6 +14,7 @@ The code itself works, but that's not the point, and as such this is more a lear
 
 - git
 - cmake
+- vcpkg
 - Visual Studio 2022 with v143 C++ toolset (C++ Desktop Development package)
 
 ```

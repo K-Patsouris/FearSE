@@ -18,7 +18,7 @@ namespace Data {
 	using GameDataUtils::SetNthEffectMagnitude;
 	using PrimitiveUtils::to_s32;
 
-	SyncTypes::LockProtectedResource<multivector> locker{};
+	static SyncTypes::LockProtectedResource<multivector> locker{};
   
 
 
@@ -218,8 +218,9 @@ namespace Data {
 			// Total 768 bytes, in 12 cachelines. Arrays in the first 11.5, and then some bytes for one-ofs and bookkeeping
 			
 			struct {
+				using Task_t = void(*)(void);
 				// Overwrites the oldest task to make room for the new one, even if that oldest task wasn't null.
-				void AddTask(void(*task)()) noexcept {
+				void AddTask(Task_t task) noexcept {
 					tq[2] = tq[1];
 					tq[1] = tq[0];
 					tq[0] = task;
@@ -257,13 +258,29 @@ namespace Data {
 						ClearTasks();
 					}
 				}
+				// Executes given task immediately, bypassing (and not affecting) queue
+				void ExecuteImmediately(Task_t task) const noexcept {
+					if (const auto tasker = SKSE::GetTaskInterface(); tasker) {
+						std::atomic<bool> waiter{};
+						waiter.store(false, std::memory_order_release); // Required? Not if construction syncs but does it? Also, maybe sequential?
+
+						tasker->AddTask([&] {
+							if (waiter.load(std::memory_order_acquire) != false) { // For sync
+								return;
+							}
+							task();
+							waiter.store(true, std::memory_order_release);
+							waiter.notify_all();
+						});
+
+						waiter.wait(false, std::memory_order_acquire); // Wait until not false
+					}
+				}
 			private:
 				u32 CountTasks() const noexcept { return static_cast<u32>((tq[0] != nullptr) + (tq[1] != nullptr) + (tq[2] != nullptr)); }
 				array<void(*)(), 3> tq{}; // Only need 2 atm
 			} static task_queue{}; // Holds a queue of up to 3 tasks to execute on the main thread.
 
-			static multivector* data_ptr{ nullptr };
-			
 			static auto get_filtered_actors = [] {
 				const RE::ProcessLists* lists{ RE::ProcessLists::GetSingleton() };
 				const trivial_handle ph{ RE::PlayerCharacter::GetSingleton() };
@@ -288,10 +305,6 @@ namespace Data {
 				}
 			};
 			static auto get_main = [] {
-				if (data_ptr) {
-					data_ptr->init_news(actptrs, pack, FearEnabled); // Not-nullptr means there are unregistered. Even if not, the func would do nothing
-					data_ptr = nullptr;
-				}
 				const u32 end = pack.actor_count;
 				for (u32 i = 0; i < end; ++i) {
 					mains[i].ParseActor(actptrs[i].get());
@@ -301,6 +314,11 @@ namespace Data {
 						mains[i].seeing.set_if_val(j, actptrs[i]->RequestDetectionLevel(actptrs[j].get()) > 0);
 					}
 				}
+			};
+			// Gets exclusive lock
+			static auto init_news_and_get_main = [] {
+				locker.GetExclusive()->init_news(actptrs, pack, FearEnabled);
+				get_main();
 			};
 			static auto set_desc = [] {
 				const i32 mag = pack.mag;
@@ -372,47 +390,36 @@ namespace Data {
 				}
 
 			};
+			// Gets exclusive lock
 			static auto zero_invalid_handles = [] {
-				if (data_ptr) {
-					auto begin = data_ptr->all_handles().begin();
-					auto end = data_ptr->all_handles().end();
-					for (; begin != end; ++begin) {
-						if (RE::Actor* act = begin->get().get(); !act or !IsValidKeepable(act)) {
-							begin->reset();
-						}
+				for (auto& handle : locker.GetExclusive()->all_handles()) {
+					if (RE::Actor* act = handle.get().get(); !act or !IsValidKeepable(act)) {
+						handle.reset();
 					}
-					data_ptr = nullptr;
 				}
 			};
 
 			// Log::Info("Update!"sv);
 
 			if (kinds.is_marked(UpdateKinds::LongUpdate)) { // Do the long first because it removes invalid elements
-				const auto locked = locker.GetExclusive();
-
-				data_ptr = locked.operator->(); // lol
-				task_queue.AddTask(zero_invalid_handles);
-				task_queue.RunTasks();
-
-				locked->clear_zero_handles();
+				task_queue.ExecuteImmediately(zero_invalid_handles);
+				locker.GetExclusive()->clear_zero_handles();
 			}
 
 			if (kinds.is_marked(UpdateKinds::DefaultUpdate)) {
-				task_queue.AddTask(get_filtered_actors);
-				task_queue.RunTasks();
+				task_queue.ExecuteImmediately(get_filtered_actors);
 
 				// Log::Info("Default update with {} actors"sv, pack.actor_count);
 
 				if (pack.actor_count != 0) {
-					const auto locked = locker.GetExclusive();
-
-					if (locked->swap_allocate_move(handles, actptrs, pack)) { // Allocation for unregistereds needed and performed
-						data_ptr = locked.operator->();
+					if (locker.GetExclusive()->swap_allocate_move(handles, actptrs, pack)) {
+						task_queue.ExecuteImmediately(init_news_and_get_main);
 					}
-					// Log::Info("Default update with {} unregistered actors and data size {}"sv, pack.unregistered_count, data_ptr->size());
-					task_queue.AddTask(get_main);
+					else {
+						task_queue.ExecuteImmediately(get_main);
+					}
 
-					task_queue.RunTasks();
+					const auto locked = locker.GetExclusive();
 
 					pack.need_ranks = FearEnabled;
 					Fear::Update(deltas.delta_default, locked->all_fears(), locked->all_equips(), mains, actptrs, pack);

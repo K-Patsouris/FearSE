@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include "Logger.h"
 #include <intrin.h>
 #pragma intrinsic(_mm_pause)
 
@@ -84,7 +85,7 @@ namespace SyncTypes {
 	class shared_spinlock {
 		using lock_t = u32;
 		enum : lock_t {
-			Unused = 0,
+			Unlocked = 0,
 			Writing = std::numeric_limits<lock_t>::max(),
 			MaxReaders = Writing - 1 // Any value < Writing works
 		};
@@ -94,30 +95,30 @@ namespace SyncTypes {
 	public:
 		void lock() noexcept {
 			for (;;) {
-				lock_t expected = Unused;
+				lock_t expected = Unlocked;
 				if (locked.compare_exchange_strong(expected, Writing, mo::acquire, mo::relaxed)) { // acquire on success, relaxed on failure (not like it does anything on x86)
 					return;
 				}
 				do {
 					_mm_pause();
-				} while (locked.load(mo::relaxed) != Unused);
+				} while (locked.load(mo::relaxed) != Unlocked);
 			}
 		}
 		void unlock() noexcept {
-			locked.store(Unused, mo::release); // Can cause UB later if not having lock() previously by underflowing when potential readers do unlock_shared()
+			locked.store(Unlocked, mo::release); // Can cause UB later if not having lock() previously by underflowing when potential readers do unlock_shared()
 		}
 
 		void lock_shared() noexcept {
-			lock_t expected = 0, desired = 1;
+			lock_t expected = Unlocked, desired = 1;
 			for (;;) {
 				if (locked.compare_exchange_strong(expected, desired, mo::acquire, mo::relaxed)) {
-					return;
+					return; // Changed it from Unlocked to 1, so we done.
 				}
-				while (expected >= MaxReaders) { // Spin-load if locking failed because not Hurdle_23. Skip and go straight to CAS with corrected values otherwise.
+				while (expected >= MaxReaders) { // Spin-load if locking failed because not lockable. Skip and go straight to CAS with corrected values otherwise.
 					_mm_pause();
 					expected = locked.load(mo::relaxed);
 				}
-				desired = expected + 1; // Here, expected represents a Hurdle_23 state (< MaxReaders which implies != Writing)
+				desired = expected + 1; // Here, expected represents a lockable state (< MaxReaders which implies != Writing)
 			}
 		}
 		void unlock_shared() noexcept {
@@ -126,22 +127,31 @@ namespace SyncTypes {
 	};
 	static_assert(sizeof(shared_spinlock) == 4);
 
-	template<typename payload, typename shared_lock = shared_spinlock> requires((sizeof(payload) + sizeof(shared_lock)) <= 64)
+	template<typename Lock_T>
+	concept SharedLock = requires(Lock_T lock) {
+		{ lock.lock() } -> std::convertible_to<void>;
+		{ lock.unlock() } -> std::convertible_to<void>;
+		{ lock.lock_shared() } -> std::convertible_to<void>;
+		{ lock.unlock_shared() } -> std::convertible_to<void>;
+	};
+
+	// Unused but kept for reference
+	template<typename payload_t, SharedLock lock_t = shared_spinlock> requires((sizeof(payload_t) + sizeof(lock_t)) <= 64)
 	class alignas(64) LockProtectedResourceAligned {
 		template<size_t padbytes>
 		struct with_padding_t {
-			payload data{};
-			shared_lock lock{};
+			payload_t data{};
+			lock_t lock{};
 			char pad[padbytes];
 		};
 		struct without_padding_t {
-			payload data{};
-			shared_lock lock{};
+			payload_t data{};
+			lock_t lock{};
 		};
 		static constexpr bool NeedPadding = sizeof(without_padding_t) < 64;
 		static constexpr size_t PadBytes = 64 - sizeof(without_padding_t);
 		using grouped_t = std::conditional_t<NeedPadding, with_padding_t<PadBytes>, without_padding_t>;
-		// I want the payload and the lock to end up in the same cacheline so padding may have to be added because MSVC warns on alignas() introducing padding and I want to keep the warnings.
+		// I want the payload_t and the lock to end up in the same cacheline so padding may have to be added because MSVC warns on alignas() introducing padding and I want to keep the warnings.
 		// Just adding a char pad[PadBytes] fails if PadBytes == 0 because 0 sized stack object yada yada. So I have to do this cancer.
 
 
@@ -149,13 +159,13 @@ namespace SyncTypes {
 		template<bool AllowWrite>
 		class LockedAccessor {
 		public:
-			using shared_guard_t = SyncTypes::noexlock_guard<shared_lock, SyncTypes::LockingMode::Shared>;
-			using exclusive_guard_t = SyncTypes::noexlock_guard<shared_lock, SyncTypes::LockingMode::Exclusive>;
-			using vec_t = std::conditional_t<AllowWrite, payload, const payload>;
+			using shared_guard_t = SyncTypes::noexlock_guard<lock_t, SyncTypes::LockingMode::Shared>;
+			using exclusive_guard_t = SyncTypes::noexlock_guard<lock_t, SyncTypes::LockingMode::Exclusive>;
+			using vec_t = std::conditional_t<AllowWrite, payload_t, const payload_t>;
 			using guard_t = std::conditional_t<AllowWrite, exclusive_guard_t, shared_guard_t>;
 
 			friend class Locker;
-			explicit LockedAccessor(vec_t& vec, shared_lock& lock) noexcept : vecptr{ &vec }, guard{ lock } {}
+			explicit LockedAccessor(vec_t& vec, lock_t& lock) noexcept : vecptr{ &vec }, guard{ lock } {}
 			LockedAccessor(const LockedAccessor&) = delete;
 			LockedAccessor(LockedAccessor&&) = delete;
 
@@ -178,22 +188,28 @@ namespace SyncTypes {
 		LockedAccessor<false> GetShared() noexcept { return LockedAccessor<false>{ data_and_lock.data, data_and_lock.lock }; }
 	};
 
-	template<typename payload, typename shared_lock = shared_spinlock>
+	template<typename payload_t, SharedLock lock_t = shared_spinlock>
 	class LockProtectedResource {
+	public:
 		// Lock is taken/released with RAII
 		template<bool AllowWrite>
 		class LockedAccessor {
-		public:
-			using shared_guard_t = SyncTypes::noexlock_guard<shared_lock, SyncTypes::LockingMode::Shared>;
-			using exclusive_guard_t = SyncTypes::noexlock_guard<shared_lock, SyncTypes::LockingMode::Exclusive>;
-			using data_t = std::conditional_t<AllowWrite, payload, const payload>;
+		private:
+			using shared_guard_t = SyncTypes::noexlock_guard<lock_t, SyncTypes::LockingMode::Shared>;
+			using exclusive_guard_t = SyncTypes::noexlock_guard<lock_t, SyncTypes::LockingMode::Exclusive>;
+			using data_t = std::conditional_t<AllowWrite, payload_t, const payload_t>;
 			using guard_t = std::conditional_t<AllowWrite, exclusive_guard_t, shared_guard_t>;
 
-			friend class Locker;
-			explicit LockedAccessor(data_t& data, shared_lock& lock) noexcept : dataptr{ &data }, guard{ lock } {}
+			friend class LockProtectedResource;
+
+			explicit LockedAccessor(data_t& data, lock_t& lock) noexcept : dataptr{ &data }, guard{ lock } {}
+			LockedAccessor() = delete;
 			LockedAccessor(const LockedAccessor&) = delete;
 			LockedAccessor(LockedAccessor&&) = delete;
+			LockedAccessor& operator=(const LockedAccessor&) = delete;
+			LockedAccessor& operator=(LockedAccessor&&) = delete;
 
+		public:
 			data_t* operator->() const noexcept { return dataptr; }
 			data_t& operator*() const noexcept { return *dataptr; }
 
@@ -202,18 +218,19 @@ namespace SyncTypes {
 			guard_t guard;
 		};
 
-		payload data{};
-		shared_lock lock{};
-
-	public:
 		LockProtectedResource() noexcept = default;
 		LockProtectedResource(const LockProtectedResource&) = delete;
 		LockProtectedResource(LockProtectedResource&&) = delete;
+		LockProtectedResource& operator=(const LockProtectedResource&) = delete;
+		LockProtectedResource& operator=(LockProtectedResource&&) = delete;
 
 		LockedAccessor<true> GetExclusive() noexcept { return LockedAccessor<true>{ data, lock }; }
 		LockedAccessor<false> GetShared() noexcept { return LockedAccessor<false>{ data, lock }; }
-	};
 
+	private:
+		payload_t data{};
+		lock_t lock{};
+	};
 
 
 }

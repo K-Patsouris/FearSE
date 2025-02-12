@@ -26,3 +26,12 @@ cmake --preset vs2022
 
 Visual Studio solution files will be written in /build. You can edit `CMakePresets.json` to add new presets, if you don't have/want Visual Studio 2022.
 It should work just fine with 2019 and v142 toolset, but I haven't tested anything older.
+
+### Post-Build copying
+
+It is often useful to have the output binaries automatically copied to some directory after each compilation, like to a SkyrimSE plugin folder so you can jump straight to playtesting after making changes.
+If you want this behavior, you can use the `vs2022_copy` preset, and specify the full output path in the FEARSE_OUT_DIR CMake variable. Example:
+```
+cmake --preset vs2022_copy -DFEARSE_OUT_DIR="C:/full/path/to/out/dir"
+```
+

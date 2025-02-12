@@ -48,7 +48,8 @@
         "value": "x64"
       },
       "cacheVariables": {
-        "CMAKE_CXX_FLAGS": "/EHsc /MP /W4 /WX"
+        "CMAKE_CXX_FLAGS": "/EHsc /MP /W4 /WX",
+        "COPY_OUTPUT": "OFF"
       },
       "generator": "Visual Studio 17 2022",
       "inherits": [
@@ -58,6 +59,15 @@
       ],
       "name": "vs2022",
       "toolset": "v143"
+    },
+    {
+      "cacheVariables": {
+        "COPY_OUTPUT": "ON"
+      },
+      "inherits": [
+		"vs2022"
+      ],
+      "name": "vs2022_copy"
     }
   ],
   "version": 3

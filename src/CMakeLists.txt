@@ -168,11 +168,16 @@ target_precompile_headers(
 )
 
 if("${COPY_OUTPUT}")
-	add_custom_command(
-		TARGET "${PROJECT_NAME}"
-		POST_BUILD
-		COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:${PROJECT_NAME}>" "Z:/Plugins/"
-		COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_PDB_FILE:${PROJECT_NAME}>" "Z:/Plugins/"
-		VERBATIM
-	)
+	if("${FEARSE_OUT_DIR}" STREQUAL "")
+		message("Warning: Output copying to destination requested but FEARSE_OUT_DIR is empty. Specify an output path through -DFEARSE_OUT_DIR=\"...\"")
+	else()
+		message("FearSE.dll and FearSE.pdb will be copied to \"${FEARSE_OUT_DIR}\" after compilation.")
+		add_custom_command(
+			TARGET "${PROJECT_NAME}"
+			POST_BUILD
+			COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:${PROJECT_NAME}>" "${FEARSE_OUT_DIR}"
+			COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_PDB_FILE:${PROJECT_NAME}>" "${FEARSE_OUT_DIR}"
+			VERBATIM
+		)
+	endif()
 endif()

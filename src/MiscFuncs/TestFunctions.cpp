@@ -164,7 +164,7 @@ namespace TestFunctions {
 	}
 
 	void DoSomething3(StaticFunc, RE::Actor* act, RE::SpellItem* spell) {
-		auto token = Log::RegisterSink(Log::ConsoleCallback, Log::info, Log::prohibit);
+		auto token = Log::RegisterSink(Log::ConsoleCallback, { .skse = Log::Severity::info, .papyrus = Log::Severity::prohibit });
 		Log::Info("Do3: ran!"sv);
 		if (!act or !spell) {
 			Log::Info("Do3: null stuff!"sv);

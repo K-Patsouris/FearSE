@@ -1,4 +1,5 @@
 #include "Common.h"
+#include "Logger.h"
 #include "MiscFuncs/GenericFunctions.h"	// Papyrus functions
 #include "MiscFuncs/TestFunctions.h"	// Papyrus functions
 #include "Data.h"						// Papyrus functions
@@ -21,14 +22,12 @@
 	}
 
 	*path /= string_view{ string{ Version::PROJECT } + ".log" };
-	if (!Log::Init(*path)) {
+	if (!Log::Init(path.value().string())) {
 		return false;
 	}
 
-	using Logger::Log::Severity::info;
-	using Logger::Log::Severity::error;
-	static auto file_token = Log::RegisterSink(Log::FileCallback, info, error); // info, error
-	static auto console_token = Log::RegisterSink(Log::ConsoleCallback, info, info); // error, info
+	static auto file_token = Log::RegisterSink(Log::FileCallback, { .skse = Log::Severity::info, .papyrus = Log::Severity::error }); // info, error
+	static auto console_token = Log::RegisterSink(Log::ConsoleCallback, { .skse = Log::Severity::info, .papyrus = Log::Severity::info }); // error, info
 	Log::Info("{} v{}.{}.{}"sv, Version::PROJECT, Version::MAJOR, Version::MINOR, Version::PATCH);
 	return true;
 }
